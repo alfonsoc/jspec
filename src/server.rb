@@ -8,7 +8,7 @@ require 'helpers'
 require 'routes'
 
 module JSpec
-  class Server
+  class Server < Sinatra::Application
     
     ##
     # Suite HTML.
@@ -31,11 +31,9 @@ module JSpec
     attr_reader :server
     
     ##
-    # Initialize.
+    # Server handlers to use.
     
-    def initialize suite, port
-      @suite, @port, @host = suite, port, :localhost
-    end
+    attr_reader :servers
     
     ##
     # URI formed by the given host and port.
@@ -45,33 +43,28 @@ module JSpec
     end
     
     ##
+    # Initialize.
     # Start the server with _browsers_ which defaults to all supported browsers.
     
-    def start browsers = nil
+    def initialize suite, port, browsers, servers = %w[thin mongrel webrick]
+      super()
+      @suite, @port, @host, @servers = suite, port, 'localhost', servers
       browsers ||= Browser.subclasses.map { |browser| browser.new }
       browsers.map do |browser|
         Thread.new {
           sleep 1
-          if browser.supported?
-            browser.setup
-            browser.visit uri + '/' + suite
-            browser.teardown
+          begin
+            if browser.supported?
+              browser.setup
+              browser.visit uri + '/' + suite
+              browser.teardown
+            end
           end
         }
       end.push(Thread.new {
-        start!
-      }).reverse.each { |thread| thread.join }
-    end
-    
-    private
-    
-    #:nodoc:
-    
-    def start!
-      Sinatra::Application.class_eval do
         begin
           $stderr.puts 'Started JSpec server at http://%s:%d' % [host, port.to_i]
-          detect_rack_handler.run self, :Host => host, :Port => port do |server|
+          detect_rack_handler.run self, {:Host=> host, :Port=>port} do |server|
             trap 'INT' do
               server.respond_to?(:stop!) ? server.stop! : server.stop
             end
@@ -80,6 +73,21 @@ module JSpec
           raise "Port #{port} already in use"
         rescue Errno::EACCES
           raise "Permission Denied on port #{port}"
+        end
+      }).reverse.each { |thread| thread.join }
+    end
+    
+    ##
+    # Detects the first rack handler available. Taken from Sinatra::Base.
+    
+    private
+    
+    def detect_rack_handler
+      @servers.each do |server_name|
+        begin
+          return Rack::Handler.get(server_name)
+        rescue LoadError
+        rescue NameError
         end
       end
     end
